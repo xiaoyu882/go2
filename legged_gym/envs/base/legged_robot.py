@@ -17,6 +17,7 @@ from legged_gym.utils.math import wrap_to_pi
 from legged_gym.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
 from legged_gym.utils.helpers import class_to_dict
 from .legged_robot_config import LeggedRobotCfg
+from legged_gym.utils.terrain import Terrain
 
 class LeggedRobot(BaseTask):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
@@ -200,7 +201,10 @@ class LeggedRobot(BaseTask):
         """
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly
         self.sim = self.gym.create_sim(self.sim_device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
-        self._create_ground_plane()
+        if self.cfg.terrain.mesh_type in ['heightfield', 'trimesh']:
+            self.terrain = Terrain(self.cfg.terrain, self.num_envs)
+        if self.cfg.terrain.mesh_type == 'plane':
+            self._create_ground_plane()
         self._create_envs()
 
     def set_camera(self, position, lookat):
@@ -606,19 +610,64 @@ class LeggedRobot(BaseTask):
 
     def _get_env_origins(self):
         """ Sets environment origins. On rough terrain the origins are defined by the terrain platforms.
-            Otherwise create a grid.
-        """
-      
-        self.custom_origins = False
-        self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
-        # create a grid of robots
-        num_cols = np.floor(np.sqrt(self.num_envs))
-        num_rows = np.ceil(self.num_envs / num_cols)
-        xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols))
-        spacing = self.cfg.env.env_spacing
-        self.env_origins[:, 0] = spacing * xx.flatten()[:self.num_envs]
-        self.env_origins[:, 1] = spacing * yy.flatten()[:self.num_envs]
-        self.env_origins[:, 2] = 0.
+        Otherwise create a grid.
+            """
+        if self.cfg.terrain.mesh_type in ["heightfield", "trimesh"]:
+            self.custom_origins = True
+            self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
+            # put robots at the origins defined by the terrain
+            max_init_level = self.cfg.terrain.max_init_terrain_level
+            if not self.cfg.terrain.curriculum: max_init_level = self.cfg.terrain.num_rows - 1
+            self.terrain_levels = torch.randint(0, max_init_level+1, (self.num_envs,), device=self.device)
+            self.terrain_types = torch.div(torch.arange(self.num_envs, device=self.device), (self.num_envs/self.cfg.terrain.num_cols), rounding_mode='floor').to(torch.long)
+            self.max_terrain_level = self.cfg.terrain.num_rows
+            self.terrain_origins = torch.from_numpy(self.terrain.env_origins).to(self.device).to(torch.float)
+            self.env_origins[:] = self.terrain_origins[self.terrain_levels, self.terrain_types]
+
+            # ! Goal
+            self.terrain_goals = torch.from_numpy(self.terrain.goals).to(self.device).to(
+                torch.float)  # [num col, num rows, num goals, 3(xyz,z=0)]
+            self.env_goals = torch.zeros(self.num_envs, self.cfg.terrain.num_goals + self.cfg.env.num_future_goal_obs,
+                                         3, device=self.device, requires_grad=False)
+            self.cur_goal_idx = torch.zeros(self.num_envs, device=self.device, requires_grad=False, dtype=torch.long)
+            temp = self.terrain_goals[self.terrain_levels, self.terrain_types]
+            last_col = temp[:, -1].unsqueeze(1)
+            self.env_goals[:] = torch.cat((temp, last_col.repeat(1, self.cfg.env.num_future_goal_obs, 1)), dim=1)[:]
+            self.cur_goals = self._gather_cur_goals()
+            self.next_goals = self._gather_cur_goals(future=1)
+
+            # frame center
+            if self.cfg.terrain.combine_frame:
+                self.frame_center = torch.from_numpy(self.terrain.frame_center).to(self.device).to(
+                torch.float) # [num col, num rows, num frame, 3(xyz,z=0)]
+                self.env_frame_centers = torch.zeros(self.num_envs, self.cfg.terrain.num_goals + self.cfg.env.num_future_goal_obs,
+                                         3, device=self.device, requires_grad=False)
+                self.cur_frame_center_idx = torch.zeros(self.num_envs, device=self.device, requires_grad=False, dtype=torch.long)
+                temp = self.frame_center[self.terrain_levels, self.terrain_types] # [num envs, num frame, 3]
+                last_col = temp[:, -1].unsqueeze(1).clone() # [num envs, 1, 3]
+                last_col[:, :, 0] += 2.0 # ! place the last two virutal frame center an offset away from the last frame center
+                self.env_frame_centers[:] = torch.cat((temp, last_col.repeat(1, self.cfg.env.num_future_goal_obs, 1)), dim=1)[:]
+                self.cur_frame_centers = self._gather_cur_frame_center()
+                # self.next_frame_centers = self._gather_cur_frame_center(future=1)
+
+        else:
+            self.custom_origins = False
+            self.env_origins = torch.zeros(self.num_envs, 3, device=self.device, requires_grad=False)
+            # create a grid of robots
+            num_cols = np.floor(np.sqrt(self.num_envs))
+            num_rows = np.ceil(self.num_envs / num_cols)
+            xx, yy = torch.meshgrid(torch.arange(num_rows), torch.arange(num_cols))
+            spacing = self.cfg.env.env_spacing
+            self.env_origins[:, 0] = spacing * xx.flatten()[:self.num_envs]
+            self.env_origins[:, 1] = spacing * yy.flatten()[:self.num_envs]
+            self.env_origins[:, 2] = 0.
+
+            # ! Fake Goal
+            self.env_goals = -100 * torch.ones(self.num_envs, self.cfg.terrain.num_goals + self.cfg.env.num_future_goal_obs,
+                                         3, device=self.device, requires_grad=False)
+            self.cur_goal_idx = torch.zeros(self.num_envs, device=self.device, requires_grad=False, dtype=torch.long)
+            self.cur_goals = self._gather_cur_goals()
+            self.next_goals = self._gather_cur_goals(future=1)
 
     def _parse_cfg(self, cfg):
         self.dt = self.cfg.control.decimation * self.sim_params.dt

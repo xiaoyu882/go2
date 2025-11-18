@@ -41,6 +41,9 @@ class Terrain:
                                                                                             self.cfg.horizontal_scale,
                                                                                             self.cfg.vertical_scale,
                                                                                             self.cfg.slope_treshold)
+        print("MESH TYPE:", self.cfg.terrain.mesh_type)
+        print("PROPORTIONS:", self.cfg.terrain.terrain_proportions)
+
     
     def randomized_terrain(self):
         for k in range(self.cfg.num_sub_terrains):

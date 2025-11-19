@@ -201,11 +201,34 @@ class LeggedRobot(BaseTask):
         """
         self.up_axis_idx = 2 # 2 for z, 1 for y -> adapt gravity accordingly
         self.sim = self.gym.create_sim(self.sim_device_id, self.graphics_device_id, self.physics_engine, self.sim_params)
-        if self.cfg.terrain.mesh_type in ['heightfield', 'trimesh']:
+        mesh_type = self.cfg.terrain.mesh_type
+
+        if mesh_type in ['heightfield', 'trimesh']:
             self.terrain = Terrain(self.cfg.terrain, self.num_envs)
-        if self.cfg.terrain.mesh_type == 'plane':
+        if mesh_type=='plane':
             self._create_ground_plane()
+        elif mesh_type=='heightfield':
+            self._create_heightfield()
+        elif mesh_type=='trimesh':
+            self._create_trimesh()
         self._create_envs()
+
+    
+    def _create_trimesh(self):
+        """ Adds a triangle mesh terrain to the simulation, sets parameters based on the cfg.
+        # """
+        tm_params = gymapi.TriangleMeshParams()
+        tm_params.nb_vertices = self.terrain.vertices.shape[0]
+        tm_params.nb_triangles = self.terrain.triangles.shape[0]
+
+        tm_params.transform.p.x = -self.terrain.cfg.border_size
+        tm_params.transform.p.y = -self.terrain.cfg.border_size
+        tm_params.transform.p.z = 0.0
+        tm_params.static_friction = self.cfg.terrain.static_friction
+        tm_params.dynamic_friction = self.cfg.terrain.dynamic_friction
+        tm_params.restitution = self.cfg.terrain.restitution
+        self.gym.add_triangle_mesh(self.sim, self.terrain.vertices.flatten(order='C'), self.terrain.triangles.flatten(order='C'), tm_params)
+        self.height_samples = torch.tensor(self.terrain.heightsamples).view(self.terrain.tot_rows, self.terrain.tot_cols).to(self.device)
 
     def set_camera(self, position, lookat):
         """ Set camera position and direction
@@ -668,7 +691,19 @@ class LeggedRobot(BaseTask):
             self.cur_goal_idx = torch.zeros(self.num_envs, device=self.device, requires_grad=False, dtype=torch.long)
             self.cur_goals = self._gather_cur_goals()
             self.next_goals = self._gather_cur_goals(future=1)
+    def _gather_cur_goals(self, future=0):
+        # [:, None, None] is just for expand dimension [num envs, 1, 1]
+        # env goals shape: [num envs, 10(num goals(8)+future goad(2)), 3(xyz)]
+        # expand: dimension to be expand must is 1. Copy the last dimension [num envs, 1, 1] --> [num envs, 1, 3]
+        # input.gather(dim, index): out[i][j][k] = input[i][index[i][j][k]][k]
 
+        # ! simplified
+        # return self.env_goals.gather(1, (self.cur_goal_idx[:, None, None]+future).expand(-1, -1, self.env_goals.shape[-1])).squeeze(1)
+
+        cur_goal_idx = self.cur_goal_idx[:, None, None]+future                      # which goal idx is reached now
+        cur_goal_idx_3d = cur_goal_idx.expand(-1, -1, self.env_goals.shape[-1])     # expand the current goal idx by x,y,z (3 dimensions)
+        gather_cur_goals_3d = self.env_goals.gather(1, cur_goal_idx_3d).squeeze(1)
+        return gather_cur_goals_3d
     def _parse_cfg(self, cfg):
         self.dt = self.cfg.control.decimation * self.sim_params.dt
         self.obs_scales = self.cfg.normalization.obs_scales

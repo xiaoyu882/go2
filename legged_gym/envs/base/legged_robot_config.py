@@ -10,6 +10,7 @@ class LeggedRobotCfg(BaseConfig):
         send_timeouts = True # send time out information to the algorithm
         episode_length_s = 20 # episode length in seconds
         test = False
+        num_future_goal_obs = 2
 
     class terrain:
         mesh_type = 'trimesh' # "heightfield" # none, plane, heightfield or trimesh

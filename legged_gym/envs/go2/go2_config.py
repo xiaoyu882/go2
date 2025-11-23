@@ -2,7 +2,7 @@ from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobot
 
 class GO2RoughCfg( LeggedRobotCfg ):
     class terrain( LeggedRobotCfg.terrain ):
-        mesh_type = 'trimesh' #'trimesh' # "heightfield" # none, plane, heightfield or trimesh
+        mesh_type = 'plane' #'trimesh' # "heightfield" # none, plane, heightfield or trimesh
         measure_heights = False #True
         terrain_length = 8.0
         terrain_width = 8.0

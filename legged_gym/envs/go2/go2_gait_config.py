@@ -1,23 +1,38 @@
 from legged_gym.envs.go2.go2_config import GO2RoughCfg, GO2RoughCfgPPO
-from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
 
 class GO2WalkCfg(GO2RoughCfg):
-    class env(GO2RoughCfg.env):
-        episode_length_s = 20  
-
     class commands(GO2RoughCfg.commands):
         class ranges:
-            lin_vel_x = [0.0, 0.8]   
-            lin_vel_y = [-0.3, 0.3]
-            ang_vel_yaw = [-0.5, 0.5]
-            heading = [-3.14, 3.14]
+            lin_vel_x = [0.1, 0.5]   
+            lin_vel_y = [-0.0, 0.0]
+            ang_vel_yaw = [-0.0, 0.0]
+            heading = [0.0, 0.0]
     
     class rewards(GO2RoughCfg.rewards):
+        base_height_target = 0.25
+        soft_dof_pos_limit = 0.85
         class scales:
-            tracking_lin_vel = 1.2
-            orientation = -1.0
-            feet_air_time = 0.5
-            action_rate = -0.02
+            tracking_lin_vel = 1.0
+            tracking_ang_vel = 0.5
+            lin_vel_z = -3.0
+            ang_vel_xy = -0.1
+            orientation = -0.
+            torques = -0.0002
+            dof_vel = -5e-7
+            dof_acc = -0.02
+            feet_air_time =  0.8
+            collision = -1.5
+            duty_factor = 1.0
+            lateral_symmetry = -0.5   
+            gait_phase = -1.0 
+
+    class control( GO2RoughCfg.control ):
+        control_type = 'P' 
+        stiffness = {'joint': 18.0}
+        damping = {'joint': 0.6}
+        action_scale = 0.18
+        decimation = 4
+
 
 class GO2TrotCfg(GO2RoughCfg):
     class commands(GO2RoughCfg.commands):

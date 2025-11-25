@@ -92,12 +92,42 @@ class GO2RoughCfg( LeggedRobotCfg ):
         terminate_after_contacts_on = ["base"]
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
   
+    # class rewards( LeggedRobotCfg.rewards ):
+    #     soft_dof_pos_limit = 0.9
+    #     base_height_target = 0.25
+    #     class scales( LeggedRobotCfg.rewards.scales ):
+    #         torques = -0.0002
+    #         dof_pos_limits = -10.0
     class rewards( LeggedRobotCfg.rewards ):
         soft_dof_pos_limit = 0.9
-        base_height_target = 0.25
+        base_height_target = 0.4
+        clearance_height_target = -0.2
+
         class scales( LeggedRobotCfg.rewards.scales ):
-            torques = -0.0002
-            dof_pos_limits = -10.0
+            termination = -0.0
+            tracking_lin_vel = 1.0
+            tracking_ang_vel = 0.5
+            lin_vel_z = -2.0
+            ang_vel_xy = -0.05
+            orientation = -0.
+            torques = -0.00001  # Changed from 0.0 to small penalty
+            dof_vel = -0.
+            dof_acc = -2.5e-7
+            base_height = -0.99
+            feet_air_time = 1.0
+            collision = -1.
+            feet_stumble = -0.0
+            action_rate = -0.01
+            stand_still = -0.
+            dof_pos_limits = -0.05
+
+        only_positive_rewards = False
+        tracking_sigma = 0.25
+        soft_dof_pos_limit = 0.9  # GO2 specific - tighter than base
+        soft_dof_vel_limit = 1.
+        soft_torque_limit = 1.
+        base_height_target = 0.30  # GO2 specific height
+        max_contact_force = 100.
 
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):
@@ -105,5 +135,6 @@ class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         run_name = ''
         experiment_name = 'rough_go2'
+
 
   

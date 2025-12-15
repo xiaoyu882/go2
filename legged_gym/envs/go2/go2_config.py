@@ -1,12 +1,21 @@
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
 class GO2RoughCfg( LeggedRobotCfg ):
+    class env( LeggedRobotCfg.env ):
+        num_observations = 317  # matches go2_env observation construction (history_len=5, n_proprio=45)
+        history_encoding = True
+        history_len = 5
+        n_proprio = 45
+        contact_buf_len = 5
+        include_act_obs_pair_buf = False
+
     class terrain( LeggedRobotCfg.terrain ):
         mesh_type = 'plane' #'trimesh' # "heightfield" # none, plane, heightfield or trimesh
         measure_heights = False #True
         terrain_length = 8.0
         terrain_width = 8.0
         env_spacing = 4.  # not used with heightfields/trimeshes
+        include_act_obs_pair_buf = False
 
 
         y_range = [-1.3, 1.3]
@@ -55,6 +64,7 @@ class GO2RoughCfg( LeggedRobotCfg ):
 
         # frame related
         combine_frame = False
+
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.42] # x,y,z [m]
         default_joint_angles = { # = target angles [rad] when action = 0.0
@@ -81,6 +91,8 @@ class GO2RoughCfg( LeggedRobotCfg ):
         damping = {'joint': 0.5}     # [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
         action_scale = 0.25
+        hip_scale_reduction = 1.0
+        use_filter = False
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
 
@@ -91,6 +103,20 @@ class GO2RoughCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["thigh", "calf"]
         terminate_after_contacts_on = ["base"]
         self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
+  
+    class domain_rand( LeggedRobotCfg.domain_rand ):
+        randomize_friction = True
+        friction_range = [0.8, 1.2]
+        randomize_base_mass = False
+        added_mass_range = [-1., 1.]
+        push_robots = True
+        push_interval_s = 15
+        max_push_vel_xy = 1.
+        lag_timesteps = 1
+        motor_strength_range = [0.9, 1.1]
+        kp_range = [0.9, 1.1]
+        kd_range = [0.9, 1.1]
+        randomize_kpkd = False
   
     # class rewards( LeggedRobotCfg.rewards ):
     #     soft_dof_pos_limit = 0.9
@@ -120,6 +146,11 @@ class GO2RoughCfg( LeggedRobotCfg ):
             action_rate = -0.01
             stand_still = -0.
             dof_pos_limits = -0.05
+            # trot_contact = 0.5
+            # pace_contact = 0.5
+            bound_contact = 0.5
+            # pace_contact = 0.5
+            bound_contact = 1.0
 
         only_positive_rewards = False
         tracking_sigma = 0.25
@@ -128,6 +159,32 @@ class GO2RoughCfg( LeggedRobotCfg ):
         soft_torque_limit = 1.
         base_height_target = 0.30  # GO2 specific height
         max_contact_force = 100.
+
+    # Cost configuration (used by go2_env.py)
+    class cost:
+        use_costs = False  # set True to enable cost functions during training
+        num_costs = 0
+
+    class costs:
+        class scales:
+            pass  # no cost scales defined when use_costs is False
+
+        class d_values:
+            pass  # no derivative values defined when use_costs is False
+
+    # Depth camera configuration (defaults keep camera disabled)
+    class depth:
+        use_camera = False
+        original = [128, 128]      # sensor output size before crop/resize
+        resized = [128, 128]       # final depth image size used in policy
+        buffer_len = 2             # number of frames kept per env
+        update_interval = 1        # steps between captures
+        horizontal_fov = 90.0
+        position = [0.2, 0.0, 0.2] # camera pose in robot frame
+        angle = [-15.0, -15.0]     # pitch range (deg)
+        near_clip = 0.1
+        far_clip = 3.0
+        dis_noise = 0.0
 
 class GO2RoughCfgPPO( LeggedRobotCfgPPO ):
     class algorithm( LeggedRobotCfgPPO.algorithm ):

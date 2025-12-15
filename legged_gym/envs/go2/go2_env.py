@@ -17,6 +17,7 @@ import torchvision
 import cv2
 
 # config
+from legged_gym import LEGGED_GYM_ROOT_DIR
 from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg
 # from global_config import ROOT_DIR
 
@@ -50,6 +51,16 @@ class LeggedRobotR2(BaseTask):
             self.set_camera(self.cfg.viewer.pos, self.cfg.viewer.lookat)
 
         self._init_buffers()
+        # Trot gait contact patterns: diag pairs touching ground alternately
+        self.trot_pattern1 = torch.tensor([1., 0., 0., 1.], device=self.device) 
+        self.trot_pattern2 = torch.tensor([0., 1., 1., 0.], device=self.device)  
+        # Pace gait contact patterns: lateral pairs touching ground alternately
+        self.pace_pattern1 = torch.tensor([1., 0., 1., 0.], device=self.device)
+        self.pace_pattern2 = torch.tensor([0., 1., 0., 1.], device=self.device)  
+        # Bound gait contact patterns: front and back pairs touching ground alternately
+        self.bound_pattern1 = torch.tensor([1., 1., 0., 0.], device=self.device)  
+        self.bound_pattern2 = torch.tensor([0., 0., 1., 1.], device=self.device)  
+
         self._prepare_reward_function()
         self._prepare_cost_function()
         self.init_done = True
@@ -136,6 +147,8 @@ class LeggedRobotR2(BaseTask):
                                    requires_grad=False)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
                                         requires_grad=False)
+        self.cost_buf = torch.zeros(self.num_envs, self.cfg.cost.num_costs, dtype=torch.float, device=self.device,
+                                    requires_grad=False)
         self.last_dof_vel = torch.zeros_like(self.dof_vel)
         self.last_torques = torch.zeros_like(self.torques)
         self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
@@ -364,7 +377,10 @@ class LeggedRobotR2(BaseTask):
         else:
             self.extras["depth"] = None
 
-        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.cost_buf, self.reset_buf, self.extras
+        if self.cfg.cost.use_costs:
+            # Expose costs via extras so runner signature stays (obs, priv, rew, done, info)
+            self.extras["cost_buf"] = self.cost_buf
+        return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
 
     def compute_observations(self):
 
@@ -862,9 +878,9 @@ class LeggedRobotR2(BaseTask):
     def reset(self):
         """ Reset all robots"""
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
-        obs, _, _, _, _, _ = self.step(
+        obs, priv_obs, _, _, _ = self.step(
             torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
-        return obs
+        return obs, priv_obs
 
     def _reset_root_states(self, env_ids):
         """ Resets ROOT states position and velocities of selected environmments
@@ -1401,6 +1417,57 @@ class LeggedRobotR2(BaseTask):
         pattern_match2 = torch.mean(torch.abs(contact_filt - self.trot_pattern2), dim=-1)
         pattern_match_flag = 1. * (pattern_match1 * pattern_match2 > 0)
         return pattern_match_flag * (torch.norm(self.commands[:, :2], dim=1) > 0.1)
+    
+    def _reward_pace_contact(self):
+        contact = self.contact_filt.float()
+        e1 = torch.mean(torch.abs(contact - self.pace_pattern1), dim=-1) 
+        e2 = torch.mean(torch.abs(contact - self.pace_pattern2), dim=-1)  
+        e = torch.minimum(e1, e2)
+        pace_score = torch.exp(-3.0 * e)
+        moving = (torch.norm(self.commands[:, :2], dim=1) > 0.1).float()
+        return pace_score * moving
+    
+    # def _reward_bound_contact(self):
+    #     contact = self.contact_filt.float()
+    #     e1 = torch.mean(torch.abs(contact - self.bound_pattern1), dim=-1)
+    #     e2 = torch.mean(torch.abs(contact - self.bound_pattern2), dim=-1)
+    #     e = torch.minimum(e1, e2)
+    #     bound_score = torch.exp(-3.0 * e)
+    #     moving = (torch.norm(self.commands[:, :2], dim=1) > 0.1).float()
+    #     return bound_score * moving
+    def _reward_bound_contact(self):
+        # contact order: [FR, FL, RR, RL]
+        c = self.contact_filt.float()
+
+        # (1) 前腿同步 + 后腿同步（bound骨架）
+        front_sync = 1.0 - torch.abs(c[:, 0] - c[:, 1])   # FR vs FL
+        rear_sync  = 1.0 - torch.abs(c[:, 2] - c[:, 3])   # RR vs RL
+        rew_pair = 0.5 * (front_sync + rear_sync)         # [0,1]
+
+        # (2) 前后交替（防止一直前腿/一直后腿）
+        prev = self.contact_buf[:, -2].float()
+        front_now  = c[:, 0] + c[:, 1]
+        rear_now   = c[:, 2] + c[:, 3]
+        front_prev = prev[:, 0] + prev[:, 1]
+        rear_prev  = prev[:, 2] + prev[:, 3]
+
+        active_now  = (front_now > rear_now).float()
+        active_prev = (front_prev > rear_prev).float()
+        rew_switch = torch.abs(active_now - active_prev)   # 0/1
+
+        # (3) 允许短 flight：更偏好 2 脚接触（前对 or 后对），也允许偶尔 0
+        num_contact = torch.sum(c, dim=1)                   # 0~4
+        rew_flight = torch.exp(-torch.abs(num_contact - 2.0))  # [0,1]
+
+        # (4) 允许 pitch 动态（bound需要点头），给一点轻奖励
+        pitch_vel = torch.abs(self.base_ang_vel[:, 1])
+        rew_pitch = torch.tanh(1.5 * pitch_vel)
+
+        moving = (torch.norm(self.commands[:, :2], dim=1) > 0.2).float()
+
+        return moving * (1.0 * rew_pair + 0.6 * rew_switch + 0.4 * rew_flight + 0.2 * rew_pitch)
+
+        
 
     # ------------- Reward Functions (matching go2.py config) --------------
 
@@ -1428,7 +1495,9 @@ class LeggedRobotR2(BaseTask):
 
     def _reward_orientation(self):
         """ Penalty for base orientation deviation from upright """
-        return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
+        # return torch.sum(torch.square(self.projected_gravity[:, :2]), dim=1)
+        # penalize roll rate only (allow pitch dynamics for bound)
+        return torch.square(self.base_ang_vel[:, 0])
 
     def _reward_torques(self):
         """ Penalty for high torques """
@@ -1457,6 +1526,7 @@ class LeggedRobotR2(BaseTask):
         rew_airTime *= torch.norm(self.commands[:, :2], dim=1) > 0.1
         self.feet_air_time *= ~contact_filt
         return rew_airTime
+    
     def _reward_dof_pos_limits(self):
         hip_pos = self.dof_pos[:,[0,3,6,9]]
         return torch.sum(torch.square(hip_pos),dim=1)
@@ -1514,4 +1584,3 @@ class LeggedRobotR2(BaseTask):
     def _cost_action_smoothness(self):
         """ Cost for non-smooth actions """
         return torch.sum(torch.square(self.last_actions - self.actions), dim=1)
-
